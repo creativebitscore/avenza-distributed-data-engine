@@ -1,229 +1,158 @@
 # Avenza — Distributed In-Memory Data Engine
 
-> **Built for Speed. Engineered for Reliability.**
+**Built for Speed. Engineered for Reliability.**
 
-Avenza is a compact C++20 data engine for studying the systems behind fast, stateful network services. It stores key/value data in memory, bounds capacity with least-recently-used eviction, expires keys with per-entry TTLs, serves concurrent TCP clients, persists mutations, publishes transient messages, and partitions keys across a static multi-node cluster.
+Avenza is a C++20 in-memory key/value engine built to explore the engineering behind low-latency stateful services: constant-time cache access, LRU eviction, TTL expiration, TCP concurrency, durable recovery, transient messaging, and consistent-hash routing across multiple nodes.
 
-Avenza is an educational engineering project with explicit limits—not a claim of production readiness or enterprise durability.
+This is an educational systems project with documented trade-offs—not a production-readiness claim.
 
-## Motivation
+## The problem
 
-A hash map alone does not make a dependable cache. A useful engine must keep lookup and eviction efficient together, define expiration semantics, frame arbitrary values across TCP, coordinate concurrent clients, recover state after restart, and decide where keys belong when several nodes participate. Avenza makes those mechanisms visible in a codebase that runs on an ordinary Windows or Linux machine.
+A bounded cache needs more than a hash map. It must evict the correct key without a linear scan, expire data safely, frame values across a byte stream, preserve invariants under concurrent clients, recover mutations after restart, and assign keys predictably when several servers participate. Avenza implements those mechanisms directly with the C++ Standard Library and native sockets.
 
-## Core capabilities
+## Engineering highlights
 
-- Average O(1) `SET`, `GET`, `DEL`, and LRU eviction
-- Configurable entry capacity and TCP port
-- Per-key expiration using `std::chrono::steady_clock`
-- Multi-client Winsock/POSIX TCP server and interactive CLI
+- Expected O(1) `SET`, `GET`, `DEL`, and LRU eviction using `std::unordered_map` plus `std::list`
+- Per-key TTL deadlines based on monotonic `std::chrono::steady_clock`
+- Winsock/POSIX TCP server with one managed session thread per client
 - Quoted line protocol supporting spaces and escaped characters
-- Checksummed append-only file and snapshot recovery
-- Thread-safe channel Pub/Sub with disconnect cleanup
-- Deterministic consistent hashing with 128 virtual nodes per server
-- Static three-node router with node, ring, and key-placement inspection
-- Statistics, benchmark executable, behavior tests, Docker Compose, and CI
+- Checksummed binary append-only file and snapshot-based startup recovery
+- Channel Pub/Sub with thread-safe subscription cleanup
+- Deterministic FNV-1a consistent-hash ring with 128 virtual nodes per server
+- Static cluster router with node, ring, and key-owner inspection
+- Cache counters, reproducible in-process benchmark, GoogleTest, integration tests, Docker Compose, and CI
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U[CLI or application] -->|quoted commands over TCP| R{Node or cluster router}
-    R -->|consistent-hash owner| N1[Avenza node :7001]
-    R -->|consistent-hash owner| N2[Avenza node :7002]
-    R -->|consistent-hash owner| N3[Avenza node :7003]
-    N1 --> E[Thread-safe cache engine]
-    E --> H[unordered_map lookup]
-    E --> L[list-based LRU order]
+    C[CLI / application] -->|TCP line protocol| R{Direct node or cluster router}
+    R -->|consistent-hash owner| N1[Avenza :7001]
+    R -->|consistent-hash owner| N2[Avenza :7002]
+    R -->|consistent-hash owner| N3[Avenza :7003]
+    N1 --> E[Cache engine]
+    E --> M[unordered_map lookup]
+    E --> L[list LRU order]
     E --> T[steady-clock TTL]
-    N1 --> PS[Pub/Sub registry]
-    N1 --> AOF[Checksummed AOF]
-    N1 --> SNAP[Snapshot]
+    N1 --> P[Pub/Sub registry]
+    N1 --> A[Checksummed AOF]
+    N1 --> S[Snapshot]
 ```
 
-Each node owns independent data and persistence files. The cluster client chooses an owner; nodes do not replicate data.
+A request is buffered to LF, parsed into quoted tokens, validated, and dispatched. Cache operations hold one mutex across the map, LRU list, TTL metadata, and statistics. Successful mutations append to the AOF. Pub/Sub writes share the connection safely through a per-client output mutex.
 
-## Request lifecycle
+## Technology
 
-1. A client writes an LF-terminated command such as `SET profile "Ada Lovelace"`.
-2. The session thread buffers partial TCP reads until a full line exists and rejects requests over 1 MiB.
-3. The parser decodes plain or quoted tokens and validates escapes, arity, and integers.
-4. The dispatcher calls the cache, persistence, or Pub/Sub component.
-5. Cache operations lock the map, LRU list, TTL metadata, and counters as one invariant.
-6. Successful persistent mutations append a checksummed AOF record.
-7. The session returns one line. Pub/Sub messages use the same connection and a per-client output mutex.
+C++20 · CMake · Standard Library · Winsock/POSIX sockets · threads, mutexes, atomics · GoogleTest · Docker Compose · PowerShell/Bash · GitHub Actions
 
-## Technical stack
+## Design summary
 
-C++20, CMake 3.20+, the Standard Library, Winsock 2 on Windows, POSIX sockets on Linux, `std::thread`, mutexes, atomics, `std::chrono`, `unordered_map`, `list`, `map`, GoogleTest, Docker Compose, PowerShell, Bash, and GitHub Actions. No framework, cloud service, database, or orchestrator is required.
+The cache map stores each entry’s iterator into a doubly linked LRU list. `GET` finds the entry and splices its node to the MRU front; eviction removes the list back and erases its map entry. These are expected O(1) operations. `GET` requires exclusive locking because it updates recency and hit counters.
 
-## Cache design and LRU eviction
+TTL deadlines use `steady_clock` while the process runs. Persistence stores an absolute Unix-millisecond deadline so elapsed offline time is respected after restart. Expiration is lazy on key access and on full scans used by size/snapshot operations.
 
-The engine combines `unordered_map<string, Entry>` with a doubly linked `list<string>`. The map provides expected O(1) lookup. Each entry stores its list iterator, so access moves it to the MRU front with `list::splice`; deletion and eviction do not search. The LRU key is always at the list back.
+Persistence loads a snapshot first, then replays later AOF mutations. Each record has type, sizes, expiry, and checksum metadata; recovery retains the valid prefix and stops at a corrupt or incomplete trailing record. `SAVE` writes a temporary snapshot, replaces the previous snapshot, then truncates the AOF.
 
-| Operation | Expected time |
-|---|---:|
-| SET, GET, DEL, EXISTS | O(1) average |
-| EXPIRE, TTL | O(1) average |
-| LRU eviction | O(1) |
-| FLUSHALL, SAVE | O(n) |
-| Consistent-hash lookup | O(log v) |
+The cluster client uses stable 64-bit FNV-1a hashing and an ordered ring. Virtual nodes reduce placement skew. An unavailable owner is reported, not silently rerouted, because Avenza has no replica that could answer safely.
 
-Hash-table worst cases remain O(n). Capacity counts entries, not bytes.
-
-## TTL implementation
-
-Live deadlines use monotonic `steady_clock`, so wall-clock corrections do not alter an in-process TTL. Expired keys are removed lazily on access and during size/snapshot scans. Permanent keys report `TTL -1`; missing or expired keys report `-2`. Persistence converts remaining duration to a Unix-millisecond deadline and reconstructs a steady deadline after restart, accounting for offline time.
-
-## TCP and concurrent clients
-
-The server listens on a configurable port and starts one session thread per accepted client. Line buffering handles fragmented and coalesced packets. Quotes preserve spaces; supported escapes are `\\`, `\"`, `\n`, `\r`, and `\t`. Separate mutexes protect cache, Pub/Sub, persistence, and client output state. `GET` needs exclusive cache access because it changes recency and hit counters. This portable design is understandable, but not intended for millions of connections.
-
-## Persistence: AOF and snapshots
-
-The AOF records successful `SET`, `DEL`, `EXPIRE`, and `FLUSHALL` mutations. Reads and Pub/Sub traffic are not persisted. Each binary record contains a magic value, type, lengths, expiration deadline, and deterministic checksum. Recovery stops safely at an incomplete, oversized, unknown, or checksum-invalid trailing record while retaining the valid prefix.
-
-`SAVE` writes live entries to a same-directory temporary snapshot, rotates the old snapshot, installs the replacement, then truncates the AOF. Startup loads snapshot first and AOF second. Streams are flushed, but explicit OS and directory `fsync` are not implemented, so power-loss durability depends on filesystem behavior.
-
-## Pub/Sub architecture
-
-`SUBSCRIBE` registers a callback by channel, `PUBLISH` fans out to current subscribers, and `UNSUBSCRIBE` removes it. Callbacks are copied under the registry lock and invoked after unlocking. Messages are transient: they are not stored, replayed, snapshotted, or assigned TTLs.
-
-## Consistent hashing and cluster routing
-
-The router hashes each node ID plus virtual-node index using deterministic 64-bit FNV-1a and stores 128 points per physical node. A key maps clockwise to the first point at or after its hash, wrapping at the end. Virtual nodes reduce skew; adding or removing a member changes adjacent ownership ranges.
-
-Router-local commands are `NODES`, `RING`, and `MAP key`. Membership changes do not migrate values. If the selected owner cannot be reached, the router reports it. It does not automatically reroute because there is no replica that could safely answer.
-
-## Repository structure
+## Repository layout
 
 ```text
-Avenza/
-├── CMakeLists.txt, Dockerfile, docker-compose.yml
-├── include/                  # public engine headers
-├── src/{cache,distributed,network,persistence,protocol}/
-├── src/main.cpp
-├── client/                   # direct and cluster-aware clients
-├── benchmarks/
-├── tests/                    # GoogleTest and offline integration suite
-├── config/, scripts/, docs/
-└── .github/workflows/
+include/cacheforge/       Engine, networking, persistence, and ring APIs
+src/                      Cache, protocol, persistence, network, and hashing implementations
+client/                   Direct CLI and consistent-hash cluster client
+benchmarks/               In-process latency/throughput benchmark
+tests/                    GoogleTest cases and dependency-free integration suite
+docs/                     Architecture and design references
+scripts/                  Windows/Linux setup and cluster helpers
+config/                   Example static cluster configuration
+Dockerfile                Multi-stage Linux image
+docker-compose.yml        Three-node local deployment
 ```
 
-Internal API identifiers are deliberately retained to keep the proven implementation and tests stable. Public executables and presentation use Avenza.
+## Build and test
 
-## Windows setup
+### Windows
 
-Install CMake and a C++20 compiler. Visual Studio 2022 Build Tools with Desktop development with C++ is recommended.
+Required components:
+
+- CMake 3.20+
+- Visual Studio 2022 Build Tools with **Desktop development with C++**
+- A Windows 10 or 11 SDK, including headers and x64 libraries
+
+From an **x64 Native Tools Command Prompt for VS 2022**:
 
 ```powershell
-winget install Kitware.CMake
-winget install Microsoft.VisualStudio.2022.BuildTools
-git clone <your-repository-url> Avenza
-cd Avenza
-cmake -S . -B build -DAVENZA_FETCH_GTEST=ON
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DAVENZA_FETCH_GTEST=ON
 cmake --build build --config Release --parallel 2
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-For an existing copy, omit `git clone`. The helper performs the same workflow:
+Clang 23 with Ninja also works after the same MSVC runtime and Windows SDK environment is initialized:
 
 ```powershell
-.\scripts\setup.ps1 -BuildType Release -FetchGoogleTest
+cmake -S . -B build-clang -G Ninja -DCMAKE_CXX_COMPILER="C:/Program Files/LLVM/bin/clang++.exe" -DCMAKE_BUILD_TYPE=Release -DAVENZA_FETCH_GTEST=ON
+cmake --build build-clang --parallel 2
+ctest --test-dir build-clang --output-on-failure
 ```
 
-## Linux setup
+The inspected machine has CMake 4.4.4, Ninja 1.13.2, Clang 23.1.4, MSVC 14.44 runtime libraries, and Windows SDK 10.0.26100.0. A system-native Clang/Ninja Release build was configured and linked successfully. No system software or global `PATH` setting was changed during this audit.
+
+### Linux
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential cmake git
-git clone <your-repository-url> Avenza
-cd Avenza
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAVENZA_FETCH_GTEST=ON
 cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 ```
 
-For offline builds, omit `AVENZA_FETCH_GTEST`; the dependency-free `avenza-self-test` remains available. An installed GTest CMake package is discovered automatically.
+Set `AVENZA_FETCH_GTEST=OFF` for an offline build; `avenza-self-test` remains available without GoogleTest.
 
-## Server and client usage
-
-Windows multi-configuration build:
+## Run
 
 ```powershell
 .\build\Release\avenza-server.exe --port 7001 --capacity 10000 --data-dir .\data\node1
 .\build\Release\avenza-cli.exe --host 127.0.0.1 --port 7001
 ```
 
-Linux or single-configuration build:
-
-```bash
-./build/avenza-server --port 7001 --capacity 10000 --data-dir ./data/node1
-./build/avenza-cli --host 127.0.0.1 --port 7001
-```
+Single-configuration builds place binaries directly in `build/` rather than `build/Release/`.
 
 ```text
-> PING
-PONG
-> SET username "Shivansh Kumar"
+> SET profile "Aparna Software Engineer"
 OK
-> GET username
-VALUE "Shivansh Kumar"
-> EXPIRE username 60
+> GET profile
+VALUE "Aparna Software Engineer"
+> EXPIRE profile 60
 1
-> TTL username
+> TTL profile
 60
 ```
 
-Start three Windows nodes with `scripts/start-cluster.ps1`, or run nodes manually on 7001–7003, then:
+Commands: `PING`, `SET key value [EX seconds]`, `GET`, `DEL`, `EXISTS`, `EXPIRE`, `TTL`, `FLUSHALL`, `STATS`, `INFO`, `SAVE`, `SUBSCRIBE`, `UNSUBSCRIBE`, and `PUBLISH`. See [DEMO.md](DEMO.md) for a complete walkthrough and [docs/PROTOCOL.md](docs/PROTOCOL.md) for response framing.
 
-```powershell
-.\build\Release\avenza-cluster.exe 127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003
-```
-
-## Command reference
-
-| Command | Purpose | Response |
-|---|---|---|
-| `PING` | Connectivity check | `PONG` |
-| `SET key value [EX seconds]` | Create or replace | `OK` |
-| `GET key` | Read and refresh LRU position | `VALUE "..."` or `NIL` |
-| `DEL key`, `EXISTS key` | Delete or test presence | `1` or `0` |
-| `EXPIRE key seconds` | Set TTL; non-positive deletes existing key | `1` or `0` |
-| `TTL key` | Remaining lifetime | seconds, `-1`, or `-2` |
-| `FLUSHALL` | Remove all keys | `OK` |
-| `STATS`, `INFO` | Counters and capacity | `name=value` fields |
-| `SAVE` | Snapshot and compact AOF | `OK` or `ERR ...` |
-| `SUBSCRIBE channel` | Register connection | `OK` |
-| `UNSUBSCRIBE channel` | Remove subscription | `1` or `0` |
-| `PUBLISH channel message` | Deliver live message | subscriber count |
-
-See [the protocol reference](docs/PROTOCOL.md) for exact framing and escaping.
-
-## Benchmark methodology and measured results
+## Benchmark evidence
 
 ```powershell
 .\build\Release\avenza-benchmark.exe 100000 10000
 ```
 
-The benchmark preloads data, uses seed 42, measures individual in-process operations with `steady_clock`, sorts latency samples, and reports throughput plus average/P50/P95/P99. It does **not** measure TCP, persistence, or multi-thread scaling.
-
-The verified local Release run used Clang 23.1.4, 100,000 operations, capacity 10,000, and reported 12 hardware threads:
+The benchmark uses seed 42 and measures the cache engine in-process with `steady_clock`; it does **not** measure TCP, persistence, or multi-threaded scaling. A verified Release run with Clang 23.1.4, 100,000 operations, capacity 10,000, and 12 reported hardware threads produced:
 
 | Workload | Throughput | Average | P50 | P95 | P99 |
 |---|---:|---:|---:|---:|---:|
-| SET | 1,704,370 ops/s | 0.509 µs | 0.4 µs | 0.9 µs | 1.2 µs |
-| GET | 3,367,797 ops/s | 0.240 µs | 0.2 µs | 0.4 µs | 0.5 µs |
-| 80% GET / 20% SET | 3,086,934 ops/s | 0.268 µs | 0.2 µs | 0.5 µs | 0.8 µs |
+| SET | 2,141,749 ops/s | 0.417 µs | 0.3 µs | 0.9 µs | 1.3 µs |
+| GET | 4,570,968 ops/s | 0.185 µs | 0.2 µs | 0.4 µs | 0.5 µs |
+| 80% GET / 20% SET | 2,719,623 ops/s | 0.318 µs | 0.2 µs | 0.7 µs | 1.2 µs |
 
-These are machine-specific local measurements, not general guarantees or network benchmark results.
+Results are machine-specific measurements, not general performance guarantees.
 
-## Testing and verification
+## Verification evidence
 
-Tests cover cache operations, LRU ordering, TTL, invalid keys, concurrency, quoted parsing, AOF and snapshot recovery, Pub/Sub filtering, hash-ring membership changes, TCP communication, and multiple clients. The latest verified Release run passed all 6 CTest entries: five discovered GoogleTests plus the integration suite. Separate live checks passed LRU, TTL, forced-restart AOF recovery, Pub/Sub between sockets, and three-node routing.
+The existing suite checks cache operations, LRU ordering, TTL, invalid keys, eight-thread access, parsing, snapshot/AOF recovery, Pub/Sub isolation, ring membership changes, TCP communication, and multiple clients. The latest verified run passed all 6 CTest entries: five discovered GoogleTests and the integration self-test. Docker Compose schema validation passed; Docker image/runtime verification was not completed because its engine was unavailable.
 
-Docker Compose schema validation passed. Docker runtime/image verification was not completed because the Docker engine was unavailable.
-
-## Docker and Compose
+## Docker
 
 ```bash
 docker compose up --build -d
@@ -232,30 +161,28 @@ docker compose logs -f avenza-node1
 docker compose down
 ```
 
-Compose exposes ports 7001–7003, gives each node a persistent volume, defines CLI health checks, and requests a ten-second shutdown grace period.
+## Limitations
 
-## Current limitations
+- No replication, automatic failover, data migration, or consensus
+- No TLS, authentication, transactions, or Redis RESP compatibility
+- Capacity is entry-based, not byte-based
+- One thread per client and one cache mutex limit scalability
+- Lazy rather than active expiration
+- Stream flush without an explicit OS `fsync` durability policy
+- Static cluster membership; unavailable owners are reported instead of rerouted
 
-- No replication, automatic failover, data migration, or consensus protocol
-- No TLS, authentication, or transactions
-- No Redis RESP compatibility
-- No byte-based memory limits
-- No event loop or bounded connection pool
-- No OS-level `fsync` durability policy
-- Unavailable cluster owners are reported rather than automatically rerouted
+## Interview and resume material
 
-## Future improvements
-
-Potential extensions include sharded locks, active expiration, a bounded worker pool or event loop, configurable sync policies, pipelined network benchmarks, fuzz/property tests, TLS authentication, membership epochs, explicit migration, and replication with a defined consistency model.
+- [Demo walkthrough](DEMO.md)
+- [Implementation-focused interview guide](INTERVIEW_GUIDE.md)
+- [Resume entry](RESUME_ENTRY.md)
+- [Detailed architecture](docs/ARCHITECTURE.md)
 
 ## Developer
 
-**Developed by Aparna**
+**Aparna**
 
-- **Portfolio:** https://portfolio-aparna-2acc.vercel.app/
-- **GitHub:** https://github.com/creativebitscore
-- **Project:** Avenza — Distributed In-Memory Data Engine
+- [Portfolio](https://portfolio-aparna-2acc.vercel.app/)
+- [GitHub repository](https://github.com/creativebitscore/avenza-distributed-data-engine)
 
-## License
-
-MIT. See [LICENSE](LICENSE).
+MIT licensed.
