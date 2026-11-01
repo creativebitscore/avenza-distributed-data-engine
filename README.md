@@ -248,9 +248,13 @@ Compose exposes ports 7001–7003, gives each node a persistent volume, defines 
 
 Potential extensions include sharded locks, active expiration, a bounded worker pool or event loop, configurable sync policies, pipelined network benchmarks, fuzz/property tests, TLS authentication, membership epochs, explicit migration, and replication with a defined consistency model.
 
-## Interview discussion points
+## Developer
 
-Avenza supports concrete discussion of why a map alone cannot implement O(1) LRU, why `GET` writes recency state, steady versus wall clocks, TCP framing, lock boundaries, crash-tail recovery, snapshot/AOF ordering, transient versus durable messaging, consistent-hash redistribution, and why failure detection is not failover. [The interview guide](docs/INTERVIEW_GUIDE.md) provides a 60-second summary, detailed walkthrough, failure scenarios, trade-offs, and 45 implementation-specific questions.
+**Developed by Aparna**
+
+- **Portfolio:** https://portfolio-aparna-2acc.vercel.app/
+- **GitHub:** https://github.com/creativebitscore
+- **Project:** Avenza — Distributed In-Memory Data Engine
 
 ## License
 
