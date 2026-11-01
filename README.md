@@ -171,13 +171,6 @@ docker compose down
 - Stream flush without an explicit OS `fsync` durability policy
 - Static cluster membership; unavailable owners are reported instead of rerouted
 
-## Interview and resume material
-
-- [Demo walkthrough](DEMO.md)
-- [Implementation-focused interview guide](INTERVIEW_GUIDE.md)
-- [Resume entry](RESUME_ENTRY.md)
-- [Detailed architecture](docs/ARCHITECTURE.md)
-
 ## Developer
 
 **Aparna**
