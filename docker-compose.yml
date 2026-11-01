@@ -1,0 +1,24 @@
+name: avenza
+services:
+  avenza-node1:
+    build: .
+    command: ["--port","7001","--capacity","10000","--data-dir","/data"]
+    ports: ["7001:7001"]
+    volumes: ["node1-data:/data"]
+    healthcheck: {test: ["CMD", "avenza-cli", "--host", "127.0.0.1", "--port", "7001"], interval: 10s, timeout: 3s, retries: 3}
+    stop_grace_period: 10s
+  avenza-node2:
+    build: .
+    command: ["--port","7002","--capacity","10000","--data-dir","/data"]
+    ports: ["7002:7002"]
+    volumes: ["node2-data:/data"]
+    healthcheck: {test: ["CMD", "avenza-cli", "--host", "127.0.0.1", "--port", "7002"], interval: 10s, timeout: 3s, retries: 3}
+    stop_grace_period: 10s
+  avenza-node3:
+    build: .
+    command: ["--port","7003","--capacity","10000","--data-dir","/data"]
+    ports: ["7003:7003"]
+    volumes: ["node3-data:/data"]
+    healthcheck: {test: ["CMD", "avenza-cli", "--host", "127.0.0.1", "--port", "7003"], interval: 10s, timeout: 3s, retries: 3}
+    stop_grace_period: 10s
+volumes: {node1-data: {}, node2-data: {}, node3-data: {}}

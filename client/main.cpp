@@ -1,0 +1,3 @@
+#include "cacheforge/network.hpp"
+#include <iostream>
+int main(int argc,char**argv){std::string host="127.0.0.1";uint16_t port=7001;for(int i=1;i<argc;++i){std::string a=argv[i];if(a=="--host"&&i+1<argc)host=argv[++i];else if(a=="--port"&&i+1<argc)port=(uint16_t)std::stoul(argv[++i]);else{std::cerr<<"usage: avenza-cli [--host HOST] [--port PORT]\n";return 2;}}cacheforge::TcpClient client;std::string error;if(!client.connect(host,port,error)){std::cerr<<error<<'\n';return 1;}std::string line,response;while(std::cout<<"> "&&std::getline(std::cin,line)){if(line=="quit"||line=="exit")break;if(!client.send_line(line,response,error)){std::cerr<<error<<'\n';return 1;}std::cout<<response<<'\n';}return 0;}

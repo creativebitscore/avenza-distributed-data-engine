@@ -1,0 +1,7 @@
+#include "cacheforge/distributed.hpp"
+#include "cacheforge/network.hpp"
+#include "cacheforge/protocol.hpp"
+#include <iostream>
+#include <map>
+#include <sstream>
+int main(int argc,char**argv){cacheforge::ConsistentHashRing ring(128);for(int i=1;i<argc;++i){std::string s=argv[i],id="node"+std::to_string(i);auto colon=s.rfind(':');if(colon==std::string::npos){std::cerr<<"nodes must be host:port\n";return 2;}ring.add({id,s.substr(0,colon),(uint16_t)std::stoul(s.substr(colon+1))});}if(ring.nodes().empty()){ring.add({"node1","127.0.0.1",7001});ring.add({"node2","127.0.0.1",7002});ring.add({"node3","127.0.0.1",7003});}std::string line;while(std::cout<<"cluster> "&&std::getline(std::cin,line)){std::string err;auto a=cacheforge::protocol::parse(line,err);if(a.empty()){if(!err.empty())std::cout<<"ERR "<<err<<'\n';continue;}auto cmd=cacheforge::protocol::upper(a[0]);if(cmd=="NODES"){for(auto&n:ring.nodes())std::cout<<n.id<<' '<<n.host<<':'<<n.port<<'\n';continue;}if(cmd=="RING"){for(auto&[p,id]:ring.points())std::cout<<p<<' '<<id<<'\n';continue;}std::string key=a.size()>1?a[1]:"__control__";if(cmd=="MAP"&&a.size()==2){auto n=ring.locate(key);std::cout<<key<<" -> "<<n->id<<' '<<n->host<<':'<<n->port<<'\n';continue;}auto n=ring.locate(key);cacheforge::TcpClient c;if(!c.connect(n->host,n->port,err)){std::cout<<"ERR node "<<n->id<<" unavailable: "<<err<<" (no replication/failover)\n";continue;}std::string response;if(!c.send_line(line,response,err))std::cout<<"ERR "<<err<<'\n';else std::cout<<'['<<n->id<<"] "<<response<<'\n';}return 0;}
