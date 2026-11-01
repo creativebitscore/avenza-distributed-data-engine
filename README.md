@@ -171,11 +171,20 @@ docker compose down
 - Stream flush without an explicit OS `fsync` durability policy
 - Static cluster membership; unavailable owners are reported instead of rerouted
 
-## Developer
+## 👩‍💻 Author
 
-**Aparna**
+<div align="center">
 
-- [Portfolio](https://portfolio-aparna-2acc.vercel.app/)
-- [GitHub repository](https://github.com/creativebitscore/avenza-distributed-data-engine)
+### Aparna Bhadoriya
 
+**Full-Stack Developer | AI & Software Engineering**
+
+[![GitHub](https://img.shields.io/badge/GitHub-creativebitscore-181717?style=for-the-badge&logo=github)](https://github.com/creativebitscore)
+[![Portfolio](https://img.shields.io/badge/Portfolio-Visit-0A66C2?style=for-the-badge&logo=vercel)](https://portfolio-aparna-2acc.vercel.app/)
+
+</div>
+
+---
+
+*Developed with a focus on intelligent document processing, hybrid information retrieval, and source-grounded AI responses.*
 MIT licensed.
